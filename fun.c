@@ -9,6 +9,49 @@
 int pid = 0;
 extern char prompt[30];
 
+JOB *head = NULL;
+int job_count = 1;
+
+void delete_job(pid_t pid)
+{
+    JOB *temp = head;
+    JOB *prev = NULL;
+
+    while(temp != NULL)
+    {
+        if(temp->pid == pid)
+        {
+            /* First node */
+            if(prev == NULL)
+            {
+                head = temp->next;
+            }
+            else
+            {
+                prev->next = temp->next;
+            }
+
+            free(temp);
+            return;
+        }
+
+        prev = temp;
+        temp = temp->next;
+    }
+}
+
+void insert_job(pid_t pid, char *cmd)
+{
+    JOB *new = malloc(sizeof(JOB));
+
+    new->job_no = job_count++;
+    new->pid = pid;
+    strcpy(new->command, cmd);
+
+    new->next = head;
+    head = new;
+}
+
 void my_strrev(char *str)
 {
     int i=0,j=strlen(str)-1;
@@ -63,6 +106,16 @@ void execute_external_command(char **argv)
             command_count++;
         }
         i++;
+    }
+
+    /* No pipe present */
+    // only one commant like sleep 10 use this because iot becomes hard for fg
+    if (command_count == 1)
+    {
+        execvp(argv[0], argv);
+
+        perror("execvp");
+        exit(EXIT_FAILURE);
     }
 
     int prev_read = -1;
@@ -155,10 +208,14 @@ void scan_input(char *prompt, char *input_string)
     }
 
     input_string[strcspn(input_string, "\n")] = '\0';
-    //if input string has PS1 = new
-    /*
-    update promt stringf as new, means read from n to null
-    */
+
+
+    //saving the original command for the jobs
+    char original_command[100];
+    strcpy(original_command, input_string);
+
+
+    //PS1 part
       if(strstr(input_string,"PS1")!=NULL)
    {
         char str[100];
@@ -179,6 +236,7 @@ void scan_input(char *prompt, char *input_string)
         //memset(prompt, 0, sizeof(prompt));
 
         strcpy(prompt,str);
+        continue;
    }
 
    //tokenise the commands
@@ -216,9 +274,20 @@ void scan_input(char *prompt, char *input_string)
     {
         int status;
         pid = fork();
+
         if(pid > 0)
         {
-            waitpid(pid,&status, WUNTRACED);
+            waitpid(pid, &status, WUNTRACED);       //WUNTRACED tells notify me when the child is stopped
+
+            if(WIFSTOPPED(status))           //to check wheather the child has stopped for the jobs part
+            {
+                insert_job(pid, original_command);
+
+                printf("\n[%d]+ Stopped\t%s\n",
+                        job_count - 1,
+                        original_command);
+            }
+
             pid = 0;
         }
         else if(pid == 0)
@@ -244,7 +313,7 @@ int check_command_type(char *cmd)
 {
     	char *builtins[] = {"echo", "printf", "read", "cd", "pwd", "pushd", "popd", "dirs", "let", "eval",
 						"set", "unset", "export", "declare", "typeset", "readonly", "getopts", "source",
-						"exit", "exec", "shopt", "caller", "true", "type", "hash", "bind", "help", NULL};
+						"exit", "exec", "shopt", "caller", "true", "type", "hash", "bind", "help", "jobs" ,"fg", "bg", NULL};
 
             char *external_commands[] = {
     "bash","ls","date", "cal", "who", "whoami", "hostname", "uname",
@@ -344,6 +413,77 @@ void execute_internal_command(char **argv)
                 i++;
             }
             printf("\n");
+        }
+    }
+
+    //excecuting jobs
+    else if(strcmp(argv[0], "jobs") == 0)
+    {
+        JOB *temp = head;
+
+        if(head == NULL)
+        {
+            printf("No stopped jobs\n");
+            return;
+        }
+
+        while(temp != NULL)
+        {
+            printf("[%d] PID : %d\tCommand : %s\n",
+                    temp->job_no,
+                    temp->pid,
+                    temp->command);
+
+            temp = temp->next;
+        }
+    }
+
+    // if the user enters fg continue the recent task
+    else if(strcmp(argv[0], "fg") == 0)
+    {
+        if(head == NULL)
+        {
+            printf("No stopped jobs\n");
+        }
+        else
+        {
+            int status;
+
+            printf("Sending SIGCONT to %d\n", head->pid);
+
+            kill(head->pid, SIGCONT);
+
+            printf("Waiting...\n");
+
+            waitpid(head->pid, &status, WUNTRACED);
+
+            if(WIFEXITED(status) || WIFSIGNALED(status))
+            {
+                delete_job(head->pid);
+            }
+
+            printf("waitpid returned\n");
+        }
+    }
+
+    else if(strcmp(argv[0], "bg") == 0)
+    {
+        if(head == NULL)
+        {
+            printf("No stopped jobs\n");
+        }
+        else
+        {
+            pid_t pid = head->pid;
+
+            if(kill(pid, SIGCONT) == -1)
+            {
+                perror("kill");
+            }
+            else
+            {
+                delete_job(pid);
+            }
         }
     }
 
